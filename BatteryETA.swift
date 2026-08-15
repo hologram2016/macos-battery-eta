@@ -423,17 +423,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         info("macOS’s first unplug guess is often high")
         menu.addItem(.separator())
         action("Refresh", #selector(refresh))
-        action("Energy Saver…", #selector(openEnergy))
+        action("Battery…", #selector(openEnergy))
         action("Quit Battery ETA", #selector(quit))
         return menu
     }
 
     @objc private func openEnergy() {
-        let pane = "/System/Library/PreferencePanes/EnergySaver.prefPane"
-        if FileManager.default.fileExists(atPath: pane) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: pane))
-        } else {
-            let url = URL(string: "x-apple.systempreferences:com.apple.preference.battery")!
+        // Monterey laptops ship Battery.prefPane. EnergySaver.prefPane is an
+        // empty stub and System Preferences shows “Could not install (null)”.
+        let panes = [
+            "/System/Library/PreferencePanes/Battery.prefPane",
+            "/System/Library/PreferencePanes/EnergySaverPref.prefPane",
+        ]
+        if let path = panes.first(where: {
+            FileManager.default.fileExists(atPath: $0 + "/Contents/Info.plist")
+        }) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            return
+        }
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.battery") {
             NSWorkspace.shared.open(url)
         }
     }
