@@ -105,6 +105,8 @@ start_app() {
 
 write_helper() {
   mkdir -p "$HOME/bin"
+  # Replace a symlink; do not write through one into another tree.
+  rm -f "$HELPER"
   cat >"$HELPER" <<'HELPER'
 #!/usr/bin/env bash
 set -euo pipefail
