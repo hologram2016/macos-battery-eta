@@ -35,7 +35,7 @@ less /tmp/install-battery-eta.sh
 bash /tmp/install-battery-eta.sh
 ```
 
-Starts at every login after boot.
+Starts at every login after boot. When a newer release exists, the menu shows **Update to …** — click to download and restart.
 
 ```bash
 battery-eta            # status

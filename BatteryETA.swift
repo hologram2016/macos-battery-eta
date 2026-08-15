@@ -260,11 +260,115 @@ func printOnce() {
     }
 }
 
+private let updateRepo = "hologram2016/macos-battery-eta"
+private let updateAsset = "BatteryETA.zip"
+private let updateCheckInterval: TimeInterval = 6 * 60 * 60
+
+struct PendingUpdate {
+    let version: String
+    let zipURL: URL
+}
+
+func installedVersion() -> String {
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0"
+}
+
+func versionParts(_ raw: String) -> [Int] {
+    var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if s.first == "v" || s.first == "V" { s = String(s.dropFirst()) }
+    return s.split(separator: ".").map { Int($0) ?? 0 }
+}
+
+func versionIsNewer(_ latest: String, than current: String) -> Bool {
+    let a = versionParts(latest)
+    let b = versionParts(current)
+    let n = max(a.count, b.count)
+    for i in 0..<n {
+        let lv = i < a.count ? a[i] : 0
+        let cv = i < b.count ? b[i] : 0
+        if lv != cv { return lv > cv }
+    }
+    return false
+}
+
+func allowedUpdateHost(_ url: URL) -> Bool {
+    let host = (url.host ?? "").lowercased()
+    return host == "github.com"
+        || host.hasSuffix(".github.com")
+        || host.hasSuffix(".githubusercontent.com")
+}
+
+final class UpdateChecker {
+    private(set) var pending: PendingUpdate?
+    private(set) var installing = false
+    var onChange: (() -> Void)?
+
+    func check() {
+        guard !installing else { return }
+        guard let url = URL(string: "https://api.github.com/repos/\(updateRepo)/releases/latest") else { return }
+        var req = URLRequest(url: url, timeoutInterval: 20)
+        req.setValue("BatteryETA/\(installedVersion())", forHTTPHeaderField: "User-Agent")
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+            guard let self, let data else { return }
+            struct Release: Decodable {
+                let tagName: String
+                let assets: [Asset]
+                enum CodingKeys: String, CodingKey {
+                    case tagName = "tag_name"
+                    case assets
+                }
+                struct Asset: Decodable {
+                    let name: String
+                    let browserDownloadUrl: String
+                    enum CodingKeys: String, CodingKey {
+                        case name
+                        case browserDownloadUrl = "browser_download_url"
+                    }
+                }
+            }
+            guard let release = try? JSONDecoder().decode(Release.self, from: data),
+                  let asset = release.assets.first(where: { $0.name == updateAsset }),
+                  let zip = URL(string: asset.browserDownloadUrl),
+                  allowedUpdateHost(zip),
+                  versionIsNewer(release.tagName, than: installedVersion())
+            else {
+                DispatchQueue.main.async {
+                    if self.pending != nil {
+                        self.pending = nil
+                        self.onChange?()
+                    }
+                }
+                return
+            }
+            let version = versionParts(release.tagName).map(String.init).joined(separator: ".")
+            DispatchQueue.main.async {
+                self.pending = PendingUpdate(version: version, zipURL: zip)
+                self.onChange?()
+            }
+        }.resume()
+    }
+
+    func beginInstall() -> Bool {
+        guard pending != nil, !installing else { return false }
+        installing = true
+        onChange?()
+        return true
+    }
+
+    func failedInstall() {
+        installing = false
+        onChange?()
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var timer: Timer?
     private var readyTimer: Timer?
+    private var updateTimer: Timer?
     private let estimator = Estimator()
+    private let updates = UpdateChecker()
     private var lastSnap = Snapshot(
         present: false, charging: false, external: false,
         percent: nil, mAh: nil, maxMAh: nil, designMAh: nil,
@@ -316,6 +420,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let nc = NSWorkspace.shared.notificationCenter
         nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.setupItem()
+            self?.updates.check()
         }
         nc.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             self?.setupItem()
@@ -334,6 +439,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             RunLoop.main.add(t, forMode: .common)
             timer = t
+        }
+        if updateTimer == nil {
+            updates.onChange = { [weak self] in
+                guard let self else { return }
+                self.apply(self.lastGlance, self.lastSnap)
+            }
+            updates.check()
+            let u = Timer(timeInterval: updateCheckInterval, repeats: true) { [weak self] _ in
+                self?.updates.check()
+            }
+            RunLoop.main.add(u, forMode: .common)
+            updateTimer = u
         }
         refresh()
     }
@@ -424,6 +541,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         action("Refresh", #selector(refresh))
         action("Battery…", #selector(openEnergy))
+        if updates.installing {
+            info("Updating…")
+        } else if let pending = updates.pending {
+            action("Update to \(pending.version)…", #selector(installUpdate))
+        }
         action("Quit Battery ETA", #selector(quit))
         return menu
     }
@@ -444,6 +566,118 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.battery") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    @objc private func installUpdate() {
+        guard let pending = updates.pending, updates.beginInstall() else { return }
+        let dest: URL = {
+            let bundle = URL(fileURLWithPath: Bundle.main.bundlePath)
+            if bundle.pathExtension == "app" { return bundle }
+            return FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Applications/Battery ETA.app")
+        }()
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("battery-eta-update-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        let zipURL = work.appendingPathComponent(updateAsset)
+
+        let task = URLSession.shared.downloadTask(with: pending.zipURL) { [weak self] file, _, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard error == nil, let file else {
+                    self.failUpdate("Could not download the update.")
+                    return
+                }
+                do {
+                    if FileManager.default.fileExists(atPath: zipURL.path) {
+                        try FileManager.default.removeItem(at: zipURL)
+                    }
+                    try FileManager.default.moveItem(at: file, to: zipURL)
+                    let extract = work.appendingPathComponent("extract", isDirectory: true)
+                    try FileManager.default.createDirectory(at: extract, withIntermediateDirectories: true)
+                    let ditto = Process()
+                    ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+                    ditto.arguments = ["-x", "-k", zipURL.path, extract.path]
+                    try ditto.run()
+                    ditto.waitUntilExit()
+                    guard ditto.terminationStatus == 0 else {
+                        self.failUpdate("Could not unpack the update.")
+                        return
+                    }
+                    let enumerator = FileManager.default.enumerator(at: extract, includingPropertiesForKeys: nil)
+                    var newApp: URL?
+                    while let item = enumerator?.nextObject() as? URL {
+                        if item.lastPathComponent == "Battery ETA.app" {
+                            newApp = item
+                            break
+                        }
+                    }
+                    guard let newApp else {
+                        self.failUpdate("Update zip did not contain Battery ETA.app.")
+                        return
+                    }
+                    self.launchReplacer(currentApp: dest, newApp: newApp)
+                } catch {
+                    self.failUpdate("Could not install the update.")
+                }
+            }
+        }
+        task.resume()
+    }
+
+    private func failUpdate(_ message: String) {
+        updates.failedInstall()
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Update failed"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
+    private func launchReplacer(currentApp: URL, newApp: URL) {
+        let scriptURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("battery-eta-replace.sh")
+        let script = """
+        #!/bin/bash
+        set -euo pipefail
+        PID="$1"
+        APP="$2"
+        NEW="$3"
+        i=0
+        while kill -0 "$PID" 2>/dev/null; do
+          i=$((i+1))
+          [ "$i" -gt 80 ] && break
+          sleep 0.1
+        done
+        sleep 0.3
+        rm -rf "$APP"
+        /usr/bin/ditto "$NEW" "$APP"
+        /usr/bin/xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+        /usr/bin/open -g -a "$APP"
+        """
+        do {
+            try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        } catch {
+            failUpdate("Could not prepare the updater.")
+            return
+        }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = [
+            scriptURL.path,
+            String(ProcessInfo.processInfo.processIdentifier),
+            currentApp.path,
+            newApp.path,
+        ]
+        do {
+            try proc.run()
+        } catch {
+            failUpdate("Could not start the updater.")
+            return
+        }
+        NSApp.terminate(nil)
     }
 
     @objc private func quit() {
