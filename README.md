@@ -19,6 +19,11 @@ Laptop-only. On a desktop Mac (no battery) the app exits. Universal binary (Inte
 
 Prebuilt app. No Xcode, no Homebrew, no sudo. User-space only (`~/Applications` + a login LaunchAgent).
 
+**Zip (universal Intel + Apple Silicon):**  
+[BatteryETA.zip](https://github.com/hologram2016/macos-battery-eta/releases/latest/download/BatteryETA.zip)
+
+Or install in one step:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hologram2016/macos-battery-eta/main/install.sh | bash
 ```
