@@ -303,7 +303,7 @@ func printOnce() {
 
 private let updateRepo = "hologram2016/macos-battery-eta"
 private let updateAsset = "BatteryETA.zip"
-private let updateCheckInterval: TimeInterval = 6 * 60 * 60
+private let updateCheckInterval: TimeInterval = 15 * 60
 
 struct PendingUpdate {
     let version: String
