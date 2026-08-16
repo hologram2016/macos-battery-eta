@@ -556,9 +556,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if snap.present {
-            if case .ac = glance {} else if case .fullIn = glance {
-                info("macOS to full  \(smcLabel(snap))")
-            } else {
+            switch glance {
+            case .ac, .fullIn:
+                break
+            default:
                 info("macOS guess    \(smcLabel(snap))")
             }
             if let mAh = snap.mAh, let maxMAh = snap.maxMAh {
