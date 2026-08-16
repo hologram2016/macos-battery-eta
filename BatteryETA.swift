@@ -42,6 +42,7 @@ enum Glance {
     case ac(percent: Int?)
     case settling(percent: Int?)
     case emptyIn(minutes: Int, percent: Int?, drainingOnAC: Bool)
+    case fullIn(minutes: Int, percent: Int?)
 
     var title: String {
         switch self {
@@ -54,6 +55,8 @@ enum Glance {
             return "…"
         case .emptyIn(let minutes, _, _):
             return formatMinutes(minutes)
+        case .fullIn(let minutes, _):
+            return "+\(formatMinutes(minutes))"
         }
     }
 
@@ -71,6 +74,10 @@ enum Glance {
             var parts = ["About \(formatMinutesWords(minutes)) to empty"]
             if let pct { parts.append("\(pct)%") }
             if onAC { parts.append("draining on AC") }
+            return parts.joined(separator: " · ")
+        case .fullIn(let minutes, let pct):
+            var parts = ["About \(formatMinutesWords(minutes)) to full"]
+            if let pct { parts.append("\(pct)%") }
             return parts.joined(separator: " · ")
         }
     }
@@ -201,9 +208,35 @@ final class Estimator {
         lastExternal = snap.external
         lastCharging = snap.charging
 
-        if snap.charging || (snap.external && !snap.discharging) {
+        if let pct = snap.percent, pct >= 99, !snap.discharging {
+            reset()
+            return .ac(percent: pct)
+        }
+
+        if snap.external && !snap.charging && !snap.discharging {
             reset()
             return .ac(percent: snap.percent)
+        }
+
+        if snap.charging {
+            if let ma = snap.milliamps, ma >= idleMilliamp {
+                samples.append(ma)
+                if samples.count > sampleLimit {
+                    samples.removeFirst(samples.count - sampleLimit)
+                }
+            }
+            if let mAh = snap.mAh, let maxMAh = snap.maxMAh, maxMAh > mAh {
+                let need = maxMAh - mAh
+                let usable = samples.filter { $0 >= idleMilliamp }
+                if let med = median(usable), med > 0 {
+                    let minutes = max(1, Int((Double(need) / Double(med) * 60.0).rounded()))
+                    return .fullIn(minutes: minutes, percent: snap.percent)
+                }
+                if let smc = snap.smcMinutes, smc > 0, smc < 24 * 60 {
+                    return .fullIn(minutes: Int(smc), percent: snap.percent)
+                }
+            }
+            return .settling(percent: snap.percent)
         }
 
         if let ma = snap.milliamps, ma <= -idleMilliamp {
@@ -244,7 +277,15 @@ func printOnce() {
     let oneShot: String
     if !snap.present {
         oneShot = "no-battery"
-    } else if snap.charging || (snap.external && !snap.discharging) {
+    } else if let pct = snap.percent, pct >= 99, !snap.discharging {
+        oneShot = "AC"
+    } else if snap.charging, let mAh = snap.mAh, let maxMAh = snap.maxMAh, maxMAh > mAh,
+              let ma = snap.milliamps, ma >= idleMilliamp {
+        let minutes = max(1, Int((Double(maxMAh - mAh) / Double(ma) * 60.0).rounded()))
+        oneShot = "+\(formatMinutes(minutes))"
+    } else if snap.charging, let smc = snap.smcMinutes, smc > 0, smc < 24 * 60 {
+        oneShot = "+\(formatMinutes(Int(smc)))"
+    } else if snap.external && !snap.discharging {
         oneShot = "AC"
     } else if let mAh = snap.mAh, let ma = snap.milliamps, ma <= -idleMilliamp {
         let minutes = Int((Double(mAh) / Double(-ma) * 60.0).rounded())
@@ -501,23 +542,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .noBattery:
             info("No internal battery")
         case .ac(let pct):
-            if snap.charging {
-                info("Charging" + (pct.map { " · \($0)%" } ?? ""))
-                info("macOS to full    \(smcLabel(snap))")
-            } else {
-                info("On power" + (pct.map { " · \($0)%" } ?? ""))
-            }
+            info("On power" + (pct.map { " · \($0)%" } ?? ""))
         case .settling(let pct):
-            info("Until empty    settling…")
+            info(snap.charging ? "Until full     settling…" : "Until empty    settling…")
             if let pct { info("Charge         \(pct)%") }
         case .emptyIn(let minutes, let pct, let onAC):
             info("Until empty    \(formatMinutesWords(minutes))")
             if let pct { info("Charge         \(pct)%") }
             if onAC { info("Draining on AC") }
+        case .fullIn(let minutes, let pct):
+            info("Until full     \(formatMinutesWords(minutes))")
+            if let pct { info("Charge         \(pct)%") }
         }
 
         if snap.present {
-            if case .ac = glance {} else {
+            if case .ac = glance {} else if case .fullIn = glance {
+                info("macOS to full  \(smcLabel(snap))")
+            } else {
                 info("macOS guess    \(smcLabel(snap))")
             }
             if let mAh = snap.mAh, let maxMAh = snap.maxMAh {

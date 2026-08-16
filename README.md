@@ -1,13 +1,15 @@
 # Battery ETA
 
-Glanceable **time-to-empty** in the macOS menu bar. Apple removed the old “2:14 Remaining” text; this puts a short estimate back.
+Glanceable **time-to-empty** (and time-to-full) in the macOS menu bar. Apple removed the old “2:14 Remaining” text; this puts a short estimate back.
 
 | Menu bar | Meaning |
 |----------|---------|
 | `2:14` | About 2 hours 14 minutes to empty |
-| `48m` | Under an hour |
-| `AC` | On power (charging or holding) |
-| `58%` | Estimate still settling (first couple of minutes after unplug) |
+| `48m` | Under an hour to empty |
+| `+48m` | About 48 minutes to full |
+| `+1:12` | About 1 hour 12 minutes to full |
+| `AC` | On power, holding (not charging) |
+| `58%` | Estimate still settling |
 
 Turns orange under ~45 minutes and red under ~20. Hover for a one-line tooltip. Click for pack current, health, and macOS’s own guess.
 

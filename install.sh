@@ -189,7 +189,7 @@ install_prebuilt() {
 
   echo "Installed: $INSTALLED"
   echo "LaunchAgent: $AGENT"
-  echo "Starts at every login after boot. Menu bar: 2:14 / 48m / AC."
+  echo "Starts at every login after boot. Menu bar: 2:14 / +48m / AC."
   case ":${PATH}:" in
     *":$HOME/bin:"*) ;;
     *)
